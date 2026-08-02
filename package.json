@@ -1,0 +1,37 @@
+{
+  "name": "homebridge-unifi-access-garage",
+  "displayName": "UniFi Access Garage",
+  "version": "1.1.0",
+  "description": "Exposes UniFi Access doors wired to garage openers as proper HomeKit GarageDoorOpener accessories, with real position-sensor state.",
+  "license": "MIT",
+  "author": "Kurt Klein",
+  "main": "index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/09kleinkd/homebridge-unifi-access-garage.git"
+  },
+  "bugs": {
+    "url": "https://github.com/09kleinkd/homebridge-unifi-access-garage/issues"
+  },
+  "homepage": "https://github.com/09kleinkd/homebridge-unifi-access-garage#readme",
+  "engines": {
+    "node": "^20.19.0 || ^22.0.0 || ^24.0.0",
+    "homebridge": ">=1.6.0 || ^2.0.0-beta.0"
+  },
+  "scripts": {
+    "test": "node test/test-plugin.js"
+  },
+  "files": [
+    "index.js",
+    "config.schema.json",
+    "CHANGELOG.md"
+  ],
+  "keywords": [
+    "homebridge-plugin",
+    "unifi",
+    "unifi-access",
+    "garage",
+    "garage-door"
+  ],
+  "dependencies": {}
+}

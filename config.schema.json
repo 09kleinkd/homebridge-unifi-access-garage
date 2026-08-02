@@ -1,0 +1,94 @@
+{
+  "pluginAlias": "UniFiAccessGarage",
+  "pluginType": "platform",
+  "singular": true,
+  "headerDisplay": "Exposes UniFi Access doors wired to garage openers as HomeKit garage doors, using the hub's door position sensor for real open/closed state.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "title": "Platform Name",
+        "type": "string",
+        "default": "UniFi Access Garage",
+        "required": true
+      },
+      "host": {
+        "title": "Access Host",
+        "type": "string",
+        "default": "192.168.1.10",
+        "required": true,
+        "description": "IP of the console running UniFi Access (the UNVR, not the gateway)."
+      },
+      "port": {
+        "title": "Port",
+        "type": "integer",
+        "default": 12445,
+        "required": true
+      },
+      "token": {
+        "title": "Access API Token",
+        "type": "string",
+        "required": true,
+        "description": "Created in UniFi Access under Settings > General > API Token. Not the same as a UniFi OS API key."
+      },
+      "rejectUnauthorized": {
+        "title": "Verify TLS certificate",
+        "type": "boolean",
+        "default": false,
+        "description": "Leave off for a local console with a self-signed certificate."
+      },
+      "pollInterval": {
+        "title": "Poll interval (seconds)",
+        "type": "integer",
+        "default": 5,
+        "minimum": 2,
+        "description": "How often to read door position. Lower is more responsive to manual operation."
+      },
+      "travelSeconds": {
+        "title": "Default travel time (seconds)",
+        "type": "integer",
+        "default": 12,
+        "description": "Fallback window if the position sensor never reports. Set comfortably above real travel time."
+      },
+      "unlockMethod": {
+        "title": "Unlock HTTP method",
+        "type": "string",
+        "default": "PUT",
+        "oneOf": [
+          { "title": "PUT", "enum": ["PUT"] },
+          { "title": "POST", "enum": ["POST"] }
+        ],
+        "description": "Change to POST if PUT returns HTTP 405."
+      },
+      "testMode": {
+        "title": "Test mode (do not actually unlock)",
+        "type": "boolean",
+        "default": false,
+        "description": "Logs the request it would send without sending it. Use for first run to verify the endpoint."
+      },
+      "doors": {
+        "title": "Doors",
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "title": "Name in HomeKit",
+              "type": "string",
+              "required": true
+            },
+            "id": {
+              "title": "Access Door ID",
+              "type": "string",
+              "required": true
+            },
+            "travelSeconds": {
+              "title": "Travel time override (seconds)",
+              "type": "integer"
+            }
+          }
+        }
+      }
+    }
+  }
+}
