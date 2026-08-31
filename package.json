@@ -1,7 +1,7 @@
 {
   "name": "homebridge-unifi-access-garage",
   "displayName": "UniFi Access Garage",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Exposes UniFi Access doors wired to garage openers as proper HomeKit GarageDoorOpener accessories, with real position-sensor state.",
   "license": "MIT",
   "author": "Kurt Klein",

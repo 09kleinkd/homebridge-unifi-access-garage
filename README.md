@@ -97,6 +97,8 @@ commands.
   "travelSeconds": 12,
   "unlockMethod": "PUT",
   "testMode": false,
+  "suppressRedundantCommands": true,
+  "sensorMaxAgeSeconds": 30,
   "doors": [
     { "name": "Left Garage", "id": "11111111-2222-3333-4444-555555555555" },
     { "name": "Right Garage", "id": "66666666-7777-8888-9999-aaaaaaaaaaaa" }
@@ -116,6 +118,30 @@ Verifying the endpoint before it can move a physical door is worth the extra res
 
 If unlock returns HTTP 405, switch `unlockMethod` to `POST`. If it returns 403, the
 token is missing `Locations: Edit`.
+
+### Bedtime automations, and why `suppressRedundantCommands` exists
+
+The obvious automation for a garage door is "close it at 22:30 in case I forgot."
+On a single-button opener that is a trap: the relay **toggles**, so a CLOSE aimed
+at a door that is already closed opens it — and leaves it open all night, which is
+the precise opposite of what the automation was for.
+
+Since 1.2.0 the plugin refuses to pulse when the position sensor has just confirmed
+the door is already where HomeKit is asking it to go. The request is acknowledged,
+the log records why, and nothing reaches the relay:
+
+    Left Garage: HomeKit requested CLOSE but the sensor reports it already CLOSED - no relay pulse sent
+
+Suppression is narrow on purpose, because conditioning the pulse on *perceived*
+state is the bug this plugin was written to fix. It requires a reporting sensor, a
+reading newer than `sensorMaxAgeSeconds`, a settled door, and a match. Fail any of
+those — no sensor, a sensor that has gone quiet, a door mid-travel, a genuine state
+change — and the relay pulses exactly as it did in 1.1.0. A retry while the door is
+moving always reaches the relay, since that is usually someone whose door did not
+move the first time.
+
+Set `"suppressRedundantCommands": false` to restore the older always-pulse
+behaviour.
 
 ## Notes
 

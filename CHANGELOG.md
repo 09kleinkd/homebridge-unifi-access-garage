@@ -3,6 +3,40 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-08-22
+
+### Changed
+
+- **A command the door has already satisfied no longer pulses the relay.** A
+  single-button opener toggles on every pulse, so a CLOSE sent to a door that is
+  already closed *opens* it. That silently inverts the most obvious automation
+  anyone writes for a garage door - "close it at bedtime in case I forgot" -
+  into one that opens the door and leaves it open overnight. The plugin now
+  acknowledges such a write to HomeKit and sends nothing to the relay.
+
+  Suppression is deliberately narrow, because conditioning the pulse on
+  *perceived* state is the bug this plugin exists to fix. It applies only when
+  all of the following hold: a position sensor is reporting, its last reading is
+  newer than `sensorMaxAgeSeconds`, the door is settled rather than mid-travel,
+  and that reading matches what HomeKit is asking for. Any doubt and the relay
+  pulses exactly as it did in 1.1.0.
+
+  In particular: doors with no position sensor are unaffected; a sensor that has
+  gone quiet - the marginal-RF case - falls back to pulsing rather than
+  swallowing the command; and tapping again mid-travel always reaches the relay,
+  since that is usually someone retrying a door that did not move.
+
+### Added
+
+- `suppressRedundantCommands` (boolean, default `true`) - set `false` to restore
+  1.1.0 behaviour of pulsing on every write.
+- `sensorMaxAgeSeconds` (integer, default `30`, floored at three poll intervals)
+  - how recent a position reading must be before it is trusted to suppress a
+  command.
+- Seven new harness cases: suppression in both directions, the stale sensor, the
+  sensorless door, a genuine state change, a mid-travel retry, and the opt-out.
+  14 cases total.
+
 ## [1.1.0] - 2026-08-02
 
 ### Changed

@@ -66,6 +66,18 @@
         "default": false,
         "description": "Logs the request it would send without sending it. Use for first run to verify the endpoint."
       },
+      "suppressRedundantCommands": {
+        "title": "Ignore commands the door has already satisfied",
+        "type": "boolean",
+        "default": true,
+        "description": "A single-button opener toggles on each pulse, so a CLOSE sent to a door the sensor reports as already closed would open it. With this on, such a command is acknowledged to HomeKit but no relay pulse is sent. Applies only when a position sensor has reported within the freshness window below; with no sensor, or a stale reading, the relay pulses as normal."
+      },
+      "sensorMaxAgeSeconds": {
+        "title": "Sensor freshness window (seconds)",
+        "type": "integer",
+        "default": 30,
+        "description": "How recent a position reading must be before it is trusted to suppress a command. Floors at three poll intervals. Lowering it makes suppression rarer and behaviour closer to always pulsing."
+      },
       "doors": {
         "title": "Doors",
         "type": "array",

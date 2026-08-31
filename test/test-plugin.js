@@ -1,6 +1,6 @@
 'use strict';
 /*
- * Harness for homebridge-unifi-access-garage v1.1.0.
+ * Harness for homebridge-unifi-access-garage v1.2.0.
  * Stubs HAP and the Access API so the state machine can be driven directly.
  */
 
@@ -179,6 +179,102 @@ function check(name, fn) { return fn().then(() => results.push(['PASS', name]), 
       `still travelling on the newer command, got ${NAMES[door.current]}`);
     await sleep(250);
     assert.strictEqual(door.current, CurrentDoorState.CLOSED, 'then resolves against the sensor');
+  });
+
+  // --- v1.2.0: redundant-command suppression ---------------------------------
+  //
+  // A single-button opener toggles, so a CLOSE aimed at a door that is already
+  // closed would open it. Suppression must be narrow: fresh sensor, settled
+  // door, matching state. Everything else must still pulse.
+
+  function countingPlatform(travelSeconds) {
+    const p = newPlatform(travelSeconds);
+    p.pulses = 0;
+    p.unlock = async () => { p.pulses += 1; };
+    return p;
+  }
+
+  // 8. The reason this exists: a bedtime "close the garage" automation.
+  await check('redundant CLOSE on a closed door sends no pulse', async () => {
+    const p = countingPlatform(1);
+    const door = p.doors.get(DOOR_ID);
+    p.sensor = 'close';
+    await p.poll();
+    await p.setTarget(door, TargetDoorState.CLOSED);
+    assert.strictEqual(p.pulses, 0, 'the relay must not fire');
+    assert.strictEqual(door.current, CurrentDoorState.CLOSED, 'door stays closed');
+    assert.strictEqual(door.target, TargetDoorState.CLOSED, 'target still acknowledged to HomeKit');
+    assert.strictEqual(door.travelTimer, null, 'no travel timer should be armed');
+    assert.ok(logLines.some(([l, m]) => l === 'info' && /no relay pulse sent/.test(m)));
+  });
+
+  // 9. Same guard, other direction.
+  await check('redundant OPEN on an open door sends no pulse', async () => {
+    const p = countingPlatform(1);
+    const door = p.doors.get(DOOR_ID);
+    p.sensor = 'open';
+    await p.poll();
+    await p.setTarget(door, TargetDoorState.OPEN);
+    assert.strictEqual(p.pulses, 0, 'the relay must not fire');
+    assert.strictEqual(door.current, CurrentDoorState.OPEN);
+  });
+
+  // 10. A real command must still work.
+  await check('genuine CLOSE on an open door still pulses', async () => {
+    const p = countingPlatform(1);
+    const door = p.doors.get(DOOR_ID);
+    p.sensor = 'open';
+    await p.poll();
+    await p.setTarget(door, TargetDoorState.CLOSED);
+    assert.strictEqual(p.pulses, 1, 'the relay must fire');
+    assert.strictEqual(door.current, CurrentDoorState.CLOSING);
+  });
+
+  // 11. The marginal-RF case. A sensor that has stopped reporting must never
+  //     cause a command to be swallowed - fall back to always pulsing.
+  await check('stale sensor reading still pulses', async () => {
+    const p = countingPlatform(1);
+    const door = p.doors.get(DOOR_ID);
+    p.sensor = 'close';
+    await p.poll();
+    door.lastPosAt = Date.now() - (p.sensorMaxAge + 1000); // sensor went quiet
+    await p.setTarget(door, TargetDoorState.CLOSED);
+    assert.strictEqual(p.pulses, 1, 'a stale reading must not suppress');
+  });
+
+  // 12. No sensor at all: unchanged from v1.1.0.
+  await check('sensorless door still pulses', async () => {
+    const p = countingPlatform(1);
+    const door = p.doors.get(DOOR_ID);
+    p.sensor = 'none';
+    await p.poll();
+    await p.setTarget(door, TargetDoorState.CLOSED);
+    assert.strictEqual(p.pulses, 1, 'no sensor means no suppression');
+  });
+
+  // 13. Retrying mid-travel must never be swallowed - that is the original bug.
+  await check('retry mid-travel still pulses', async () => {
+    const p = countingPlatform(2);
+    const door = p.doors.get(DOOR_ID);
+    p.sensor = 'close';
+    await p.poll();
+    await p.setTarget(door, TargetDoorState.OPEN);
+    assert.strictEqual(door.current, CurrentDoorState.OPENING);
+    await p.setTarget(door, TargetDoorState.OPEN); // impatient second tap
+    assert.strictEqual(p.pulses, 2, 'the retry must reach the relay');
+    if (door.travelTimer) clearTimeout(door.travelTimer);
+  });
+
+  // 14. The escape hatch.
+  await check('suppressRedundantCommands: false restores v1.1.0 behaviour', async () => {
+    const p = countingPlatform(1);
+    p.suppressRedundant = false;
+    const door = p.doors.get(DOOR_ID);
+    p.sensor = 'close';
+    await p.poll();
+    await p.setTarget(door, TargetDoorState.CLOSED);
+    assert.strictEqual(p.pulses, 1, 'opt-out must pulse on every write');
+    if (door.travelTimer) clearTimeout(door.travelTimer);
   });
 
   for (const r of results) console.log(r[0].padEnd(5), r[1], r[2] ? `\n      ${r[2]}` : '');

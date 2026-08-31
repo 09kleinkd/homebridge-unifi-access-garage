@@ -14,9 +14,19 @@
  *
  * This plugin fixes that by:
  *   - driving CurrentDoorState from the hub's door position sensor (DPS)
- *   - pulsing the relay on every target write, never conditioning it on state
+ *   - pulsing the relay on every target write, conditioned only on a *fresh*
+ *     sensor reading, never on perceived state (see v1.2.0 below)
  *   - modelling OPENING/CLOSING with a travel timer that yields to the sensor
  *   - picking up manual operation (wall button, remote) via polling
+ *
+ * v1.2.0
+ *   - suppress the relay pulse when the position sensor has just confirmed the
+ *     door is already where HomeKit is asking it to go. A single-button opener
+ *     toggles, so a redundant CLOSE on a closed door *opens* it - which silently
+ *     inverts a "close the garage at bedtime" automation. Suppression requires a
+ *     sensor reading newer than sensorMaxAgeSeconds; with no sensor or a stale
+ *     one the relay pulses exactly as before. Disable with
+ *     suppressRedundantCommands: false.
  *
  * v1.1.0
  *   - on travel timeout, re-read the sensor and report actual position rather
@@ -59,6 +69,18 @@ class UniFiAccessGaragePlatform {
     this.defaultTravel = this.config.travelSeconds || 12;
     this.rejectUnauthorized = this.config.rejectUnauthorized === true;
     this.testMode = this.config.testMode === true;
+
+    // Suppress the relay pulse when the position sensor *confidently* reports the
+    // door is already where HomeKit is asking it to go. A single-button opener
+    // toggles, so a redundant CLOSE on a closed door opens it - which turns a
+    // "close the garage at bedtime" automation into one that opens it overnight.
+    // Only ever suppresses on a fresh sensor reading; with no sensor, or a stale
+    // one, behaviour is unchanged and we still pulse.
+    this.suppressRedundant = this.config.suppressRedundantCommands !== false;
+    this.sensorMaxAge = Math.max(
+      this.pollInterval * 3,
+      this.config.sensorMaxAgeSeconds || 30,
+    ) * 1000;
 
     // Poll health. A failed poll used to log at debug level, which meant a
     // rotated token or a rebooted console froze every door silently.
@@ -139,6 +161,7 @@ class UniFiAccessGaragePlatform {
       travelSeq: 0,
       sensorSeen: false,
       lastPos: null,
+      lastPosAt: 0,
     };
     this.doors.set(doorCfg.id, state);
 
@@ -154,12 +177,49 @@ class UniFiAccessGaragePlatform {
   }
 
   /**
+   * Is this write asking for something the door is already doing or already is?
+   *
+   * Only ever true on a *fresh* sensor reading. The original bug this plugin
+   * exists to fix came from conditioning the pulse on a state the official
+   * plugin never updated; conditioning on a position sensor we poll ourselves
+   * is a different proposition. When there is no sensor, or the last reading is
+   * older than sensorMaxAge, this returns false and the relay pulses as before.
+   */
+  isRedundant(door, value) {
+    if (!this.suppressRedundant) return false;
+    if (!door.sensorSeen) return false;
+    if (door.lastPos !== 'open' && door.lastPos !== 'close') return false;
+    if (Date.now() - door.lastPosAt > this.sensorMaxAge) return false;
+
+    // Mid-travel, always pulse. Someone tapping again while the door is moving is
+    // usually retrying because it did not move, and swallowing that retry is the
+    // exact behaviour this plugin was written to eliminate.
+    if (door.current === Characteristic.CurrentDoorState.OPENING
+        || door.current === Characteristic.CurrentDoorState.CLOSING) return false;
+
+    const wantOpen = value === Characteristic.TargetDoorState.OPEN;
+    return wantOpen === (door.lastPos === 'open');
+  }
+
+  /**
    * A single-button garage opener toggles on each pulse, so OPEN and CLOSE both
-   * send the same unlock. Critically, we pulse on EVERY write rather than
-   * comparing against perceived state - that is the bug this plugin exists to fix.
+   * send the same unlock. We pulse on EVERY write rather than comparing against
+   * *perceived* state - that is the bug this plugin exists to fix - with one
+   * exception: a write the position sensor has just confirmed is already
+   * satisfied. See isRedundant().
    */
   async setTarget(door, value) {
     const opening = value === Characteristic.TargetDoorState.OPEN;
+
+    if (this.isRedundant(door, value)) {
+      this.log.info(`${door.name}: HomeKit requested ${opening ? 'OPEN' : 'CLOSE'} `
+        + `but the sensor reports it already ${door.lastPos === 'open' ? 'OPEN' : 'CLOSED'} `
+        + `- no relay pulse sent`);
+      door.target = value;
+      door.service.updateCharacteristic(Characteristic.TargetDoorState, value);
+      return;
+    }
+
     door.target = value;
     this.log.info(`${door.name}: HomeKit requested ${opening ? 'OPEN' : 'CLOSE'} - pulsing relay`);
 
@@ -322,6 +382,7 @@ class UniFiAccessGaragePlatform {
         continue;
       }
       door.sensorSeen = true;
+      door.lastPosAt = Date.now();
 
       const isOpen = pos === 'open';
       const settled = isOpen
