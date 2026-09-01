@@ -78,6 +78,12 @@
         "default": 30,
         "description": "How recent a position reading must be before it is trusted to suppress a command. Floors at three poll intervals. Lowering it makes suppression rarer and behaviour closer to always pulsing."
       },
+      "openAlertMinutes": {
+        "title": "Report a door open longer than (minutes)",
+        "type": "integer",
+        "default": 0,
+        "description": "Adds a contact sensor per door that trips once the door has been open this long, so HomeKit can notify you. 0 disables it. Notifying is a safer answer to 'do not leave the garage open all night' than automating a close, since this plugin cannot detect obstructions."
+      },
       "doors": {
         "title": "Doors",
         "type": "array",
@@ -97,6 +103,11 @@
             "travelSeconds": {
               "title": "Travel time override (seconds)",
               "type": "integer"
+            },
+            "openAlertMinutes": {
+              "title": "Open-too-long override (minutes)",
+              "type": "integer",
+              "description": "Per-door override of the platform setting. 0 disables it for this door only."
             }
           }
         }

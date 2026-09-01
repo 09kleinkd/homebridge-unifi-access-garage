@@ -3,6 +3,42 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-09-01
+
+### Fixed
+
+- **A position sensor that stops reporting is now announced.** `sensorSeen` was a
+  one-way latch: it was set the first time a door was seen, so a door that came
+  up healthy and *later* lost its contact - a loose wire, a magnet off the door -
+  logged nothing at all. State silently reverted to timer-based, and 1.2.0's
+  redundant-command suppression silently stopped working, which quietly restores
+  the ability of a scheduled CLOSE to open the door. Loss and recovery are now
+  both reported, in the same loud-once pattern as poll failures.
+
+  Note this is specifically the *transition* case. A door with no sensor from the
+  start was always reported correctly; the gap was a sensor that failed later.
+
+### Added
+
+- **`openAlertMinutes`** - an optional contact sensor per door that trips once
+  the door has been open past the threshold, giving HomeKit a native trigger for
+  "the garage has been open too long." Settable per platform or per door; `0` or
+  absent disables it and no accessory is created. Turning it off again removes
+  the accessory rather than leaving a stale tile in Home.
+
+  **Notifying is the safer answer to "don't leave the garage open all night."**
+  This plugin reports `ObstructionDetected: false` unconditionally because UniFi
+  Access does not expose obstruction data, so an unattended close relies entirely
+  on the opener's own safety beam. An alert asks a human to decide.
+
+  The alert follows the door however it moved - HomeKit, wall button or car
+  remote - because it is driven from the same state funnel the position sensor
+  feeds, not from commands the plugin issued.
+
+- Five new harness cases: sensor loss, sensor recovery, suppression correctly
+  stopping once the sensor is gone, the open-too-long trip-and-clear cycle, and
+  the sensor being absent unless configured. 19 cases total.
+
 ## [1.2.0] - 2026-08-22
 
 ### Changed

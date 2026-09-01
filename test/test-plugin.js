@@ -1,6 +1,6 @@
 'use strict';
 /*
- * Harness for homebridge-unifi-access-garage v1.2.0.
+ * Harness for homebridge-unifi-access-garage v1.3.0.
  * Stubs HAP and the Access API so the state machine can be driven directly.
  */
 
@@ -23,9 +23,14 @@ function makeService() {
   };
 }
 
-const Service = { AccessoryInformation: 'AccessoryInformation', GarageDoorOpener: 'GarageDoorOpener' };
+const Service = {
+  AccessoryInformation: 'AccessoryInformation',
+  GarageDoorOpener: 'GarageDoorOpener',
+  ContactSensor: 'ContactSensor',
+};
+const ContactSensorState = { CONTACT_DETECTED: 0, CONTACT_NOT_DETECTED: 1 };
 const Characteristic = {
-  CurrentDoorState, TargetDoorState,
+  CurrentDoorState, TargetDoorState, ContactSensorState,
   ObstructionDetected: 'ObstructionDetected',
   Manufacturer: 'Manufacturer', Model: 'Model', SerialNumber: 'SerialNumber',
 };
@@ -45,9 +50,18 @@ const api = {
   registerPlatform: () => {},
   registerPlatformAccessories: () => {},
   platformAccessory: class {
-    constructor(name) { this.displayName = name; this._svc = makeService(); }
+    constructor(name) { this.displayName = name; this._svc = makeService(); this._byId = new Map(); }
     getService() { return this._svc; }
-    addService() { return this._svc; }
+    getServiceById(_type, sub) { return this._byId.get(sub) || null; }
+    addService(_type, _name, sub) {
+      if (sub === undefined) return this._svc;
+      const s = makeService();
+      this._byId.set(sub, s);
+      return s;
+    }
+    removeService(svc) {
+      for (const [k, v] of this._byId) if (v === svc) this._byId.delete(k);
+    }
   },
 };
 
@@ -59,12 +73,12 @@ require('../index.js')({
 
 const DOOR_ID = 'door-1';
 
-function newPlatform(travelSeconds) {
+function newPlatform(travelSeconds, extra) {
   logLines.length = 0;
-  const cfg = {
+  const cfg = Object.assign({
     host: '10.0.0.1', token: 'x', pollInterval: 2,
     travelSeconds, doors: [{ name: 'Test Garage', id: DOOR_ID }],
-  };
+  }, extra || {});
   const p = new PlatformCtor(log, cfg, api);
   p.sensor = 'close';
   p.failNext = null;
@@ -275,6 +289,78 @@ function check(name, fn) { return fn().then(() => results.push(['PASS', name]), 
     await p.setTarget(door, TargetDoorState.CLOSED);
     assert.strictEqual(p.pulses, 1, 'opt-out must pulse on every write');
     if (door.travelTimer) clearTimeout(door.travelTimer);
+  });
+
+  // --- v1.3.0: sensor loss is loud, and the open-too-long sensor ---------------
+
+  // 15. The defect 1.3.0 exists to fix. sensorSeen was a one-way latch, so a
+  //     door that came up healthy and later lost its contact said nothing at all.
+  await check('a sensor that stops reporting is announced', async () => {
+    const p = newPlatform(1);
+    const door = p.doors.get(DOOR_ID);
+    p.sensor = 'close';
+    await p.poll();
+    assert.strictEqual(door.sensorPresent, true, 'healthy first');
+    p.sensor = 'none';
+    await p.poll();
+    assert.strictEqual(door.sensorPresent, false);
+    assert.ok(logLines.some(([l, m]) => l === 'warn' && /STOPPED reporting/.test(m)),
+      'losing a live sensor must warn');
+  });
+
+  // 16. And recovery is reported, so the log tells a complete story.
+  await check('sensor recovery is announced', async () => {
+    const p = newPlatform(1);
+    const door = p.doors.get(DOOR_ID);
+    p.sensor = 'close';
+    await p.poll();
+    p.sensor = 'none';
+    await p.poll();
+    p.sensor = 'close';
+    await p.poll();
+    assert.strictEqual(door.sensorPresent, true);
+    assert.ok(logLines.some(([l, m]) => l === 'info' && /reporting again/.test(m)));
+  });
+
+  // 17. The consequence that makes it worth announcing: suppression stops.
+  await check('suppression stops once the sensor is gone', async () => {
+    const p = countingPlatform(1);
+    const door = p.doors.get(DOOR_ID);
+    p.sensor = 'close';
+    await p.poll();
+    await p.setTarget(door, TargetDoorState.CLOSED);
+    assert.strictEqual(p.pulses, 0, 'suppressed while healthy');
+    p.sensor = 'none';
+    await p.poll();
+    await p.setTarget(door, TargetDoorState.CLOSED);
+    assert.strictEqual(p.pulses, 1, 'must pulse again once the sensor is gone');
+    if (door.travelTimer) clearTimeout(door.travelTimer);
+  });
+
+  // 18. Open-too-long: arms on open, trips after the window, clears on close.
+  await check('open-too-long sensor trips, then clears when the door closes', async () => {
+    const p = newPlatform(1, { openAlertMinutes: 1 });
+    const door = p.doors.get(DOOR_ID);
+    assert.ok(door.alertService, 'alert service should exist when openAlertMinutes is set');
+    door.openAfter = 150;
+    p.sensor = 'open';
+    await p.poll();
+    assert.strictEqual(door.openAlert, false, 'must not trip immediately');
+    await sleep(250);
+    assert.strictEqual(door.openAlert, true, 'should trip after the window');
+    assert.ok(logLines.some(([l, m]) => l === 'warn' && /has been open for/.test(m)));
+    p.sensor = 'close';
+    await p.poll();
+    assert.strictEqual(door.openAlert, false, 'closing must clear it');
+    assert.strictEqual(door.openTimer, null, 'and disarm the timer');
+  });
+
+  // 19. Off by default - no stray accessory appears in Home.
+  await check('no open-too-long sensor unless configured', async () => {
+    const p = newPlatform(1);
+    const door = p.doors.get(DOOR_ID);
+    assert.strictEqual(door.alertService, null);
+    assert.strictEqual(door.openAfter, 0);
   });
 
   for (const r of results) console.log(r[0].padEnd(5), r[1], r[2] ? `\n      ${r[2]}` : '');

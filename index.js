@@ -28,6 +28,19 @@
  *     one the relay pulses exactly as before. Disable with
  *     suppressRedundantCommands: false.
  *
+ * v1.3.0
+ *   - a position sensor that STOPS reporting is now loud. The old sensorSeen
+ *     flag was a one-way latch: a door that came up healthy could later drop to
+ *     door_position_status "none" - a loose contact, a magnet off the door - and
+ *     nothing was ever logged. State silently reverted to timer-based and 1.2.0's
+ *     redundant-command suppression silently stopped working. Loss and recovery
+ *     are now both reported.
+ *   - optional "open too long" contact sensor per door, so HomeKit can notify
+ *     when a door has been open past a threshold. Notifying is a safer answer to
+ *     "don't leave the garage open all night" than automating a physical close,
+ *     since this plugin cannot see obstructions. Off unless openAlertMinutes is
+ *     set.
+ *
  * v1.1.0
  *   - on travel timeout, re-read the sensor and report actual position rather
  *     than assuming the door arrived. A door that failed to move no longer
@@ -42,6 +55,7 @@ const https = require('https');
 
 const PLUGIN_NAME = 'homebridge-unifi-access-garage';
 const PLATFORM_NAME = 'UniFiAccessGarage';
+const ALERT_SUBTYPE = 'open-alert';
 
 let Service, Characteristic, UUIDGen;
 
@@ -81,6 +95,9 @@ class UniFiAccessGaragePlatform {
       this.pollInterval * 3,
       this.config.sensorMaxAgeSeconds || 30,
     ) * 1000;
+
+    // Optional per-door "open too long" contact sensor. 0 or absent disables it.
+    this.defaultOpenAlert = Math.max(0, this.config.openAlertMinutes || 0);
 
     // Poll health. A failed poll used to log at debug level, which meant a
     // rotated token or a rebooted console froze every door silently.
@@ -127,6 +144,7 @@ class UniFiAccessGaragePlatform {
     if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
     for (const door of this.doors.values()) {
       if (door.travelTimer) { clearTimeout(door.travelTimer); door.travelTimer = null; }
+      if (door.openTimer) { clearTimeout(door.openTimer); door.openTimer = null; }
     }
   }
 
@@ -159,11 +177,39 @@ class UniFiAccessGaragePlatform {
       target: Characteristic.TargetDoorState.CLOSED,
       travelTimer: null,
       travelSeq: 0,
-      sensorSeen: false,
+      // null = never heard from, true = reporting, false = reporting "none".
+      // Tracked as a transition rather than a one-way latch, so a sensor that
+      // fails after a healthy start is reported rather than swallowed.
+      sensorPresent: null,
       lastPos: null,
       lastPosAt: 0,
+      openAfter: Math.max(0, doorCfg.openAlertMinutes !== undefined
+        ? doorCfg.openAlertMinutes
+        : this.defaultOpenAlert) * 60000,
+      openTimer: null,
+      openAlert: false,
+      alertService: null,
     };
     this.doors.set(doorCfg.id, state);
+
+    const existingAlert = accessory.getServiceById
+      ? accessory.getServiceById(Service.ContactSensor, ALERT_SUBTYPE)
+      : null;
+
+    if (state.openAfter > 0) {
+      state.alertService = existingAlert
+        || accessory.addService(Service.ContactSensor, `${doorCfg.name} Open Too Long`, ALERT_SUBTYPE);
+      state.alertService.getCharacteristic(Characteristic.ContactSensorState)
+        .onGet(() => (state.openAlert
+          ? Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
+          : Characteristic.ContactSensorState.CONTACT_DETECTED));
+      this.log.info(`${doorCfg.name}: will report open longer than `
+        + `${Math.round(state.openAfter / 60000)} minutes`);
+    } else if (existingAlert && accessory.removeService) {
+      // The option was turned off; do not leave a stale accessory in Home.
+      accessory.removeService(existingAlert);
+      this.log.info(`${doorCfg.name}: open-too-long sensor removed`);
+    }
 
     service.getCharacteristic(Characteristic.CurrentDoorState)
       .onGet(() => state.current);
@@ -187,7 +233,7 @@ class UniFiAccessGaragePlatform {
    */
   isRedundant(door, value) {
     if (!this.suppressRedundant) return false;
-    if (!door.sensorSeen) return false;
+    if (door.sensorPresent !== true) return false;
     if (door.lastPos !== 'open' && door.lastPos !== 'close') return false;
     if (Date.now() - door.lastPosAt > this.sensorMaxAge) return false;
 
@@ -315,6 +361,38 @@ class UniFiAccessGaragePlatform {
     if (door.current === value) return;
     door.current = value;
     door.service.updateCharacteristic(Characteristic.CurrentDoorState, value);
+    this.updateOpenAlert(door);
+  }
+
+  /**
+   * Arm, clear or trip the optional "open too long" contact sensor. Driven from
+   * setCurrent so it follows the door however it moved - HomeKit, wall button,
+   * or car remote - rather than only tracking commands we issued.
+   */
+  updateOpenAlert(door) {
+    if (!door.alertService) return;
+
+    if (door.current !== Characteristic.CurrentDoorState.OPEN) {
+      if (door.openTimer) { clearTimeout(door.openTimer); door.openTimer = null; }
+      if (door.openAlert) {
+        door.openAlert = false;
+        door.alertService.updateCharacteristic(Characteristic.ContactSensorState,
+          Characteristic.ContactSensorState.CONTACT_DETECTED);
+        this.log.info(`${door.name}: no longer open - alert cleared`);
+      }
+      return;
+    }
+
+    if (door.openTimer || door.openAlert) return; // already counting, or already tripped
+
+    door.openTimer = setTimeout(() => {
+      door.openTimer = null;
+      door.openAlert = true;
+      door.alertService.updateCharacteristic(Characteristic.ContactSensorState,
+        Characteristic.ContactSensorState.CONTACT_NOT_DETECTED);
+      this.log.warn(`${door.name}: has been open for `
+        + `${Math.round(door.openAfter / 60000)} minutes`);
+    }, door.openAfter);
   }
 
   async fetchDoors() {
@@ -374,14 +452,25 @@ class UniFiAccessGaragePlatform {
       const pos = entry.door_position_status;
       door.lastPos = pos;
 
-      if (pos === 'none') {
-        if (!door.sensorSeen) {
-          this.log.warn(`${door.name}: door_position_status is "none" - no position sensor reporting. State will be timer-based only.`);
-          door.sensorSeen = true;
+      if (pos !== 'open' && pos !== 'close') {
+        if (door.sensorPresent === true) {
+          // Was healthy, now is not. This is the failure the one-way flag hid.
+          this.log.warn(`${door.name}: position sensor STOPPED reporting `
+            + `(door_position_status is "${pos}"). State reverts to timer-based, and commands the `
+            + `door has already satisfied will no longer be suppressed - a scheduled CLOSE can now `
+            + `open this door. Check the contact and its wiring at the door hub.`);
+        } else if (door.sensorPresent === null) {
+          this.log.warn(`${door.name}: door_position_status is "${pos}" - no position sensor `
+            + `reporting. State will be timer-based only.`);
         }
+        door.sensorPresent = false;
         continue;
       }
-      door.sensorSeen = true;
+
+      if (door.sensorPresent === false) {
+        this.log.info(`${door.name}: position sensor is reporting again`);
+      }
+      door.sensorPresent = true;
       door.lastPosAt = Date.now();
 
       const isOpen = pos === 'open';

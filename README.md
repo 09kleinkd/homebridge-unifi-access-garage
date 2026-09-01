@@ -99,6 +99,7 @@ commands.
   "testMode": false,
   "suppressRedundantCommands": true,
   "sensorMaxAgeSeconds": 30,
+  "openAlertMinutes": 15,
   "doors": [
     { "name": "Left Garage", "id": "11111111-2222-3333-4444-555555555555" },
     { "name": "Right Garage", "id": "66666666-7777-8888-9999-aaaaaaaaaaaa" }
@@ -142,6 +143,37 @@ move the first time.
 
 Set `"suppressRedundantCommands": false` to restore the older always-pulse
 behaviour.
+
+### `openAlertMinutes` — notify instead of automating a close
+
+Set it, and each door gains a contact sensor that trips once the door has been
+open that long. Home can then notify you, and you decide. `0` or absent means no
+accessory is created at all; turning it off later removes the accessory rather
+than leaving a stale tile behind. Per-door overrides live alongside `travelSeconds`.
+
+**This is the recommended way to handle "don't leave the garage open all night."**
+The plugin reports `ObstructionDetected: false` unconditionally, because UniFi
+Access exposes no obstruction data — so an unattended close depends entirely on
+your opener's own safety beam. An alert puts a person in the loop; a scheduled
+close does not.
+
+The alert tracks the door however it moved — HomeKit, wall button, or car remote
+— because it hangs off the same state the position sensor drives, not off commands
+the plugin issued.
+
+### When a position sensor fails
+
+Since 1.3.0 a sensor that **stops** reporting is logged at warn level, and its
+recovery at info:
+
+    Left Garage: position sensor STOPPED reporting (door_position_status is "none").
+    State reverts to timer-based, and commands the door has already satisfied will no
+    longer be suppressed - a scheduled CLOSE can now open this door.
+
+That last clause is why it matters. Losing the sensor does not merely degrade
+state tracking; it also disables the 1.2.0 guard, which quietly hands a scheduled
+CLOSE the ability to open the door again. Before 1.3.0 this happened in silence,
+because the flag tracking sensor presence was only ever set, never cleared.
 
 ## Notes
 
